@@ -156,7 +156,25 @@ on:
           - 'On'
           - 'Off'
         default: 'Off'
-         
+
+      sysfs:
+        description: "是否启用sysfs补丁"
+        required: true
+        type: choice
+        options:
+          - 'On'
+          - 'Off'
+        default: 'Off'
+
+      selinux_patch:
+        description: "是否启用SELinux fake补丁"
+        required: true
+        type: choice
+        options:
+          - 'On'
+          - 'Off'
+        default: 'Off'
+
 jobs:
   build:
     name: For ${{ github.event.inputs.FEIL }} KPM ${{ github.event.inputs.KPM }} lz4kd ${{ github.event.inputs.lz4kd }} SUSFS ${{ github.event.inputs.SUSFS }}
@@ -276,11 +294,11 @@ jobs:
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/external/dtc/scripts/setlocalversion
           
           if [ "${{ github.event.inputs.KERNEL_VERSION }}" != "6.6" ]; then
-            sed -i '$s|echo "\$res"|echo "-${{ github.event.inputs.ANDROID_VERSION }}-oki-xiaoxiaow"|' kernel_platform/common/scripts/setlocalversion            
-            sed -i '$s|echo "\$res"|echo "-${{ github.event.inputs.ANDROID_VERSION }}-oki-xiaoxiaow"|' kernel_platform/msm-kernel/scripts/setlocalversion
-            sed -i '$s|echo "\$res"|echo "-${{ github.event.inputs.ANDROID_VERSION }}-oki-xiaoxiaow"|' kernel_platform/external/dtc/scripts/setlocalversion
+            sed -i '$s|echo "\$res"|echo "-${{ github.event.inputs.ANDROID_VERSION }}-oki-Cyrene"|' kernel_platform/common/scripts/setlocalversion            
+            sed -i '$s|echo "\$res"|echo "-${{ github.event.inputs.ANDROID_VERSION }}-oki-Cyrene"|' kernel_platform/msm-kernel/scripts/setlocalversion
+            sed -i '$s|echo "\$res"|echo "-${{ github.event.inputs.ANDROID_VERSION }}-oki-Cyrene"|' kernel_platform/external/dtc/scripts/setlocalversion
           else
-            ESCAPED_SUFFIX=$(printf '%s\n' "-${{ github.event.inputs.ANDROID_VERSION }}-oki-xiaoxiaow" | sed 's:[\/&]:\\&:g')
+            ESCAPED_SUFFIX=$(printf '%s\n' "-${{ github.event.inputs.ANDROID_VERSION }}-oki-Cyrene" | sed 's:[\/&]:\\&:g')
             sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" kernel_platform/common/arch/arm64/configs/gki_defconfig
             sed -i 's/${scm_version}//' kernel_platform/common/scripts/setlocalversion
             sed -i 's/${scm_version}//' kernel_platform/msm-kernel/scripts/setlocalversion
@@ -304,14 +322,6 @@ jobs:
           # 下载并执行设置脚本
           echo "🛠️ 正在设置SukiSU Ultra..."
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s builtin
-          
-          cd KernelSU
-          echo "⬇️ 下载SukiSU设置工具..."
-          curl -L -o sukisu_setup.bin https://github.com/Xiaomichael/OnePlus-Actions/raw/Build/script/sukisu_setup.bin
-          chmod +x sukisu_setup.bin
-          
-          ./sukisu_setup.bin
-          rm -rf ./sukisu_setup.bin
           
           echo "✅ SukiSU Ultra配置完成"
           
@@ -495,6 +505,140 @@ jobs:
 
           echo "✅ 所有补丁应用完成"
 
+
+      - name: "🔧 Apply sysfs patches | 应用sysfs补丁"
+        if: ${{ github.event.inputs.sysfs == 'On' }}
+        run: |
+          cd kernel_workspace
+          echo "📥 克隆 sysfs 仓库..."
+          if ! git clone https://github.com/Nyako-mini/sysfs.git; then
+            echo "⚠️ 警告: sysfs仓库克隆失败"
+            exit 0
+          fi
+          echo "✅ sysfs 仓库克隆成功"
+          
+          echo "📁 复制 sysfs 文件到 kernel 目录..."
+          mkdir -p kernel_platform/common/kernel
+          if ! cp -r sysfs/* kernel_platform/common/kernel/ 2>/dev/null; then
+            echo "⚠️ 警告: 复制sysfs文件失败"
+          else
+            echo "✅ sysfs 文件复制成功"
+          fi
+          
+          echo "📝 修改 kernel/Makefile..."
+          KERNEL_MAKEFILE="kernel_platform/common/kernel/Makefile"
+          if [ ! -f "$KERNEL_MAKEFILE" ]; then
+            touch "$KERNEL_MAKEFILE"
+            echo "📝 创建新的 Makefile"
+          fi
+          echo "" >> "$KERNEL_MAKEFILE"
+          echo "# Added by sysfs patch" >> "$KERNEL_MAKEFILE"
+          echo "obj-y += ufsid_sysfs.o" >> "$KERNEL_MAKEFILE"
+          echo "obj-y += cpuinfo.o" >> "$KERNEL_MAKEFILE"
+          echo "obj-y += batteryinfo.o" >> "$KERNEL_MAKEFILE"
+          echo "obj-y += fp_id.o" >> "$KERNEL_MAKEFILE"
+          echo "obj-y += fake.o" >> "$KERNEL_MAKEFILE"
+          echo "✅ kernel/Makefile 修改完成"
+          
+          echo "📝 修改 drivers/base/core.c 添加 EXPORT_SYMBOL_GPL..."
+          CORE_C="kernel_platform/common/drivers/base/core.c"
+          if [ -f "$CORE_C" ]; then
+            if grep -q "EXPORT_SYMBOL_GPL(devices_kset)" "$CORE_C"; then
+              echo "✅ EXPORT_SYMBOL_GPL(devices_kset) 已存在，跳过修改"
+            else
+              if sed -i '/struct kset \*devices_kset;/a EXPORT_SYMBOL_GPL(devices_kset);' "$CORE_C" 2>/dev/null; then
+                echo "✅ 成功在 $CORE_C 中添加 EXPORT_SYMBOL_GPL(devices_kset)"
+              else
+                echo "⚠️ 警告: 修改 $CORE_C 失败"
+              fi
+            fi
+          else
+            echo "⚠️ 警告: 未找到 $CORE_C 文件"
+            echo "🔍 正在搜索其他位置的 core.c..."
+            found=false
+            find kernel_platform -name "core.c" -path "*/drivers/base/*" 2>/dev/null | while read core_file; do
+              echo "🔍 找到: $core_file"
+              if grep -q "EXPORT_SYMBOL_GPL(devices_kset)" "$core_file"; then
+                echo "✅ $core_file 中已存在 EXPORT_SYMBOL_GPL(devices_kset)"
+              else
+                if sed -i '/struct kset \*devices_kset;/a EXPORT_SYMBOL_GPL(devices_kset);' "$core_file" 2>/dev/null; then
+                  echo "✅ 成功在 $core_file 中添加 EXPORT_SYMBOL_GPL(devices_kset)"
+                  found=true
+                fi
+              fi
+            done
+            if [ "$found" = false ]; then
+              echo "⚠️ 警告: 未找到 devices_kset 声明，无法添加 EXPORT_SYMBOL_GPL"
+            fi
+          fi
+          
+          echo "🎉 sysfs 补丁应用完成"
+
+      - name: "🔧 Apply SELinux patch | 应用SELinux补丁"
+        if: ${{ github.event.inputs.selinux_patch == 'On' }}
+        run: |
+          cd kernel_workspace
+          echo "🔍 检查 sysfs 目录是否存在..."
+          if [ ! -d "sysfs" ]; then
+            echo "❌ 错误: sysfs 目录不存在，请确保 sysfs 补丁步骤已执行"
+            exit 1
+          fi
+          echo "✅ sysfs 目录已存在"
+          
+          # 检查 sysfs 目录下是否有 selinuxfs.c 文件
+          HOOKS_SOURCE="sysfs/selinuxfs.c"
+          HOOKS_TARGET="kernel_platform/common/security/selinux/selinuxfs.c"
+          
+          if [ -f "$HOOKS_SOURCE" ]; then
+            echo "✅ 找到 selinuxfs.c 源文件: $HOOKS_SOURCE"
+            
+            # 检查目标目录是否存在
+            TARGET_DIR=$(dirname "$HOOKS_TARGET")
+            if [ ! -d "$TARGET_DIR" ]; then
+              echo "❌ 错误: 目标目录不存在: $TARGET_DIR"
+              exit 1
+            fi
+            
+            # 备份原始 selinuxfs.c
+            if [ -f "$HOOKS_TARGET" ]; then
+              echo "📦 备份原始 selinuxfs.c 为 selinuxfs.c.bak"
+              cp "$HOOKS_TARGET" "$HOOKS_TARGET.bak"
+            fi
+            
+            # 复制新文件
+            echo "📝 复制 selinuxfs.c 到内核源码目录..."
+            cp "$HOOKS_SOURCE" "$HOOKS_TARGET"
+            
+            if [ $? -eq 0 ]; then
+              echo "✅ selinuxfs.c 替换成功!"
+              echo "📊 文件信息:"
+              echo "  源文件: $HOOKS_SOURCE ($(wc -c < $HOOKS_SOURCE) bytes)"
+              echo "  目标文件: $HOOKS_TARGET ($(wc -c < $HOOKS_TARGET) bytes)"
+              
+              # 验证替换是否成功
+              if grep -q "selinux_fake_enforcing" "$HOOKS_TARGET"; then
+                echo "✅ 验证成功: 目标文件中包含 selinux_fake_enforcing"
+                echo "📋 相关代码行:"
+                grep -n "selinux_fake_enforcing\|fake_show\|fake_store" "$HOOKS_TARGET" | head -10 || echo "未找到匹配行"
+              else
+                echo "⚠️ 警告: 替换后的文件中未找到 selinux_fake_enforcing"
+                echo "   可能文件内容不完整，请检查"
+              fi
+            else
+              echo "❌ 错误: 文件复制失败"
+              exit 1
+            fi
+          else
+            echo "❌ 错误: 未找到 selinuxfs.c 源文件: $HOOKS_SOURCE"
+            echo "📋 当前 sysfs 目录内容:"
+            ls -la sysfs/ 2>/dev/null || echo "目录不存在"
+            echo ""
+            echo "💡 请确保 sysfs 仓库克隆后包含了 selinuxfs.c 文件"
+            exit 1
+          fi
+          
+          echo "🎉 SELinux 补丁处理完成"
+
       - name: "⚙️ Apply SCHED Patch | 应用风驰补丁"
         if: ${{ github.event.inputs.KERNEL_VERSION == '6.6' }}
         run: |
@@ -635,8 +779,8 @@ jobs:
       - name: "🔨 Build Kernel | 编译内核"
         run: |
           echo "🏗️ 开始内核编译..."
-          export KBUILD_BUILD_USER="xiaoxiaow"
-          export KBUILD_BUILD_HOST="xiaoxiaow_build"
+          export KBUILD_BUILD_USER="Cyrene"
+          export KBUILD_BUILD_HOST="Cyrene_build"
 
           if [ "${{ github.event.inputs.KERNEL_VERSION }}" == "6.1" ]; then
             export KBUILD_BUILD_TIMESTAMP="Tue Mar 10 03:53:33 UTC 2026"
@@ -671,6 +815,37 @@ jobs:
           
           ccache -s
           echo "✅ 内核编译完成"
+
+
+      - name: "🔍 Verify SELinux patch in compiled kernel"
+        if: ${{ github.event.inputs.selinux_patch == 'On' }}
+        run: |
+          echo "🔍 验证 SELinux 补丁是否被编译进内核..."
+          
+          # 检查 vmlinux 中是否包含相关符号
+          VMLINUX=$(find ./kernel_workspace/kernel_platform/common/out -name "vmlinux" | head -n 1)
+          if [ -f "$VMLINUX" ]; then
+            echo "📄 检查 vmlinux 中的 SELinux fake 符号..."
+            if strings "$VMLINUX" | grep -q "selinux_fake_enforcing"; then
+              echo "✅ vmlinux 中包含 selinux_fake_enforcing 符号"
+            else
+              echo "⚠️ vmlinux 中未找到 selinux_fake_enforcing 符号"
+            fi
+            
+            if strings "$VMLINUX" | grep -q "fake state interface created"; then
+              echo "✅ vmlinux 中包含 fake state 日志信息"
+            else
+              echo "⚠️ vmlinux 中未找到 fake state 日志信息"
+            fi
+          else
+            echo "⚠️ 未找到 vmlinux 文件"
+          fi
+          
+          # 检查编译日志
+          echo "📋 检查编译日志中是否有相关警告..."
+          if [ -f "./kernel_workspace/kernel_platform/common/out/build.log" ]; then
+            grep -i "selinux.*fake\|selinux_fake" ./kernel_workspace/kernel_platform/common/out/build.log || echo "编译日志中无相关输出"
+          fi
           
       - name: "📦 Package Kernel | 打包内核"
         run: |
@@ -741,30 +916,3 @@ jobs:
         with:
           name: ${{ github.event.inputs.FEIL }}_zram.ko
           path: ./kernel_workspace/kernel_platform/common/out/drivers/block/zram/zram.ko
-
-      # - name: "🤖 Get bot script | 获取 bot 脚本"
-        # uses: actions/checkout@v6
-        # with:
-          # path: bot
-
-      # - name: "📤 Upload to telegram | 上传至Telegram群组"
-        # run: |
-          # if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
-            # echo "📤 正在上传到Telegram..."
-            # cd AnyKernel3
-            # zip -q -r "../${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip" ./*
-            # cd ..
-            # pip3 install telethon
-            # python3 ./bot/script/buildbot.py "./${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip"
-            # echo "✅ 文件已上传到Telegram"
-          # fi
-        # env:
-          # CHATID: ${{secrets.CHATID}}
-          # BOT_TOKEN: ${{secrets.BOT_TOKEN}}
-          # MESSAGE_THREAD_ID: ${{secrets.MESSAGE_THREAD_ID}}
-          # KernelVer: ${{ github.event.inputs.ANDROID_VERSION}}-${{ github.event.inputs.KERNEL_VERSION }}
-          # DEVICE: ${{ github.event.inputs.FEIL }}
-          # KPM: ${{ github.event.inputs.KPM }}
-          # LZ4KD: ${{ github.event.inputs.lz4kd }}
-          # BBR: ${{ github.event.inputs.bbr }}
-          # KSU_VAR: "SukiSU"
